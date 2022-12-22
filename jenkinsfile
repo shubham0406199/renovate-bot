@@ -1,1 +1,89 @@
+pipeline {
+    agent {
+        docker {
+            label 'docker && linux'
+            image 'renovatebot/renovate:24.29.1-slim'
+            args '-v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/tmp'
+        }
+    }
 
+    environment {
+        CONFIGURATION = 'Release'
+        TZ = 'Europe/Berlin'
+        ENV = '/usr/local/etc/env'
+        RENOVATE_TOKEN = credentials('bot-token')
+        RENOVATE_DOCKER_USER = 'root'
+        GITHUB_COM_TOKEN = credentials('gh-token')
+        NPM_TOKEN = credentials('XX_NPM_TOKEN')
+        SVC_CI = credentials('svc-ci')
+        LOG_LEVEL = 'debug'
+        GIT_AUTHOR_NAME = 'Renovate Bot'
+        GIT_AUTHOR_EMAIL = 'bot@domain.de'
+        GIT_COMMITTER_NAME = 'Renovate Bot'
+        GIT_COMMITTER_EMAIL = 'bot@domain.de'
+    }
+
+    parameters {
+        string defaultValue: '', description: '', name: 'RENOVATE_ARGS', trim: true
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 1, unit: 'HOURS')
+        ansiColor('xterm')
+        buildDiscarder logRotator(artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '', numToKeepStr: env.BRANCH_NAME == 'main' ? '240' : '')
+    }
+    triggers {
+        // cron('H/30 6-17 * * 1-5')
+        // cron('H/30 * * * *')
+        // cron('H * * * *')
+        cron(env.BRANCH_NAME == 'main' ? 'H 0 * * *\nH 2-23 * * *' : '')
+    }
+    stages {
+        stage('init') {
+            steps {
+                sh 'renovate --version'
+                sh 'rm -f renovate.log'
+            }
+        }
+
+        stage('test') {
+            when { not { branch 'main' } }
+
+            environment {
+                RENOVATE_GIT_AUTHOR = 'Renovate Test Bot <bot@domain.de>'
+                GIT_AUTHOR_NAME = 'Renovate Test Bot'
+                GIT_COMMITTER_NAME = 'Renovate Test Bot'
+                RENOVATE_TMPDIR = "${env.WORKSPACE}/.tmp"
+            }
+
+            steps {
+                sh 'echo "$SVC_CI_PSW" | docker login $DOCKER_REGISTRY -u $SVC_CI_USR --password-stdin'
+                sh 'renovate --dry-run --log-file renovate.log --log-file-level debug --autodiscover-filter \'test/*\''
+            }
+            post {
+                always {
+                    sh 'docker logout $DOCKER_REGISTRY'
+                }
+            }
+        }
+
+        stage('renovate') {
+            when { branch 'main' }
+            steps {
+                sh 'echo "$SVC_CI_PSW" | docker login $DOCKER_REGISTRY -u $SVC_CI_USR --password-stdin'
+                sh "renovate --log-file renovate.log --log-file-level debug ${params.RENOVATE_ARGS}"
+            }
+            post {
+                always {
+                    sh 'docker logout $DOCKER_REGISTRY'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            archiveArtifacts allowEmptyArchive: true, artifacts: 'renovate.log'
+        }
+    }
+}
